@@ -3,6 +3,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { authorize } from './lib/gating.js';
+import { parseIdSpec } from './lib/idspec.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -59,7 +61,22 @@ export class ProxmoxServer {
       throw new Error('PROXMOX_TOKEN_VALUE environment variable is required');
     }
     this.proxmoxPort = process.env.PROXMOX_PORT || '8006';
-    this.allowElevated = process.env.PROXMOX_ALLOW_ELEVATED === 'true';
+    this.gate = {
+      categories: {
+        provision: process.env.ALLOW_PROVISION === 'true',
+        power: process.env.ALLOW_POWER === 'true',
+        snapshot: process.env.ALLOW_SNAPSHOT === 'true',
+        backup: process.env.ALLOW_BACKUP === 'true',
+        destroy: process.env.ALLOW_DESTROY === 'true',
+      },
+      protectedIds: parseIdSpec(process.env.PROTECTED_IDS),
+      managedRange: (() => {
+        const m = String(process.env.MANAGED_RANGE || '400-499').match(/^(\d+)-(\d+)$/);
+        return m ? { lo: Number(m[1]), hi: Number(m[2]) } : { lo: 400, hi: 499 };
+      })(),
+    };
+    // Back-compat: legacy methods read this for "show extra detail" behavior.
+    this.allowElevated = Object.values(this.gate.categories).some(Boolean);
     
     // Create agent that accepts self-signed certificates
     this.httpsAgent = new https.Agent({
@@ -1081,188 +1098,195 @@ export class ProxmoxServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-
-      try {
-        switch (name) {
-          case 'proxmox_get_nodes':
-            return await this.getNodes();
-            
-          case 'proxmox_get_node_status':
-            return await this.getNodeStatus(args.node);
-            
-          case 'proxmox_get_vms':
-            return await this.getVMs(args.node, args.type);
-            
-          case 'proxmox_get_vm_status':
-            return await this.getVMStatus(args.node, args.vmid, args.type);
-            
-          case 'proxmox_execute_vm_command':
-            return await this.executeVMCommand(args.node, args.vmid, args.command, args.type);
-            
-          case 'proxmox_get_storage':
-            return await this.getStorage(args.node);
-            
-          case 'proxmox_get_cluster_status':
-            return await this.getClusterStatus();
-
-          case 'proxmox_list_templates':
-            return await this.listTemplates(args.node, args.storage);
-
-          case 'proxmox_create_lxc':
-            return await this.createLXCContainer(args);
-
-          case 'proxmox_create_vm':
-            return await this.createVM(args);
-
-          case 'proxmox_get_next_vmid':
-            return await this.getNextVMID();
-
-          case 'proxmox_start_lxc':
-            return await this.startVM(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_start_vm':
-            return await this.startVM(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_stop_lxc':
-            return await this.stopVM(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_stop_vm':
-            return await this.stopVM(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_delete_lxc':
-            return await this.deleteVM(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_delete_vm':
-            return await this.deleteVM(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_reboot_lxc':
-            return await this.rebootVM(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_reboot_vm':
-            return await this.rebootVM(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_shutdown_lxc':
-            return await this.shutdownVM(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_shutdown_vm':
-            return await this.shutdownVM(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_pause_vm':
-            return await this.pauseVM(args.node, args.vmid);
-
-          case 'proxmox_resume_vm':
-            return await this.resumeVM(args.node, args.vmid);
-
-          case 'proxmox_clone_lxc':
-            return await this.cloneVM(args.node, args.vmid, args.newid, args.hostname, 'lxc');
-
-          case 'proxmox_clone_vm':
-            return await this.cloneVM(args.node, args.vmid, args.newid, args.name, 'qemu');
-
-          case 'proxmox_resize_lxc':
-            return await this.resizeVM(args.node, args.vmid, args.memory, args.cores, 'lxc');
-
-          case 'proxmox_resize_vm':
-            return await this.resizeVM(args.node, args.vmid, args.memory, args.cores, 'qemu');
-
-          case 'proxmox_create_snapshot_lxc':
-            return await this.createSnapshot(args.node, args.vmid, args.snapname, 'lxc');
-
-          case 'proxmox_create_snapshot_vm':
-            return await this.createSnapshot(args.node, args.vmid, args.snapname, 'qemu');
-
-          case 'proxmox_list_snapshots_lxc':
-            return await this.listSnapshots(args.node, args.vmid, 'lxc');
-
-          case 'proxmox_list_snapshots_vm':
-            return await this.listSnapshots(args.node, args.vmid, 'qemu');
-
-          case 'proxmox_rollback_snapshot_lxc':
-            return await this.rollbackSnapshot(args.node, args.vmid, args.snapname, 'lxc');
-
-          case 'proxmox_rollback_snapshot_vm':
-            return await this.rollbackSnapshot(args.node, args.vmid, args.snapname, 'qemu');
-
-          case 'proxmox_delete_snapshot_lxc':
-            return await this.deleteSnapshot(args.node, args.vmid, args.snapname, 'lxc');
-
-          case 'proxmox_delete_snapshot_vm':
-            return await this.deleteSnapshot(args.node, args.vmid, args.snapname, 'qemu');
-
-          case 'proxmox_create_backup_lxc':
-            return await this.createBackup(args.node, args.vmid, args.storage, args.mode, args.compress, 'lxc');
-
-          case 'proxmox_create_backup_vm':
-            return await this.createBackup(args.node, args.vmid, args.storage, args.mode, args.compress, 'qemu');
-
-          case 'proxmox_list_backups':
-            return await this.listBackups(args.node, args.storage);
-
-          case 'proxmox_restore_backup_lxc':
-            return await this.restoreBackup(args.node, args.vmid, args.archive, args.storage, 'lxc');
-
-          case 'proxmox_restore_backup_vm':
-            return await this.restoreBackup(args.node, args.vmid, args.archive, args.storage, 'qemu');
-
-          case 'proxmox_delete_backup':
-            return await this.deleteBackup(args.node, args.storage, args.volume);
-
-          case 'proxmox_add_disk_vm':
-            return await this.addDiskVM(args.node, args.vmid, args.disk, args.storage, args.size);
-
-          case 'proxmox_add_mountpoint_lxc':
-            return await this.addMountPointLXC(args.node, args.vmid, args.mp, args.storage, args.size);
-
-          case 'proxmox_resize_disk_vm':
-            return await this.resizeDiskVM(args.node, args.vmid, args.disk, args.size);
-
-          case 'proxmox_resize_disk_lxc':
-            return await this.resizeDiskLXC(args.node, args.vmid, args.disk, args.size);
-
-          case 'proxmox_remove_disk_vm':
-            return await this.removeDiskVM(args.node, args.vmid, args.disk);
-
-          case 'proxmox_remove_mountpoint_lxc':
-            return await this.removeMountPointLXC(args.node, args.vmid, args.mp);
-
-          case 'proxmox_move_disk_vm':
-            return await this.moveDiskVM(args.node, args.vmid, args.disk, args.storage, args.delete);
-
-          case 'proxmox_move_disk_lxc':
-            return await this.moveDiskLXC(args.node, args.vmid, args.disk, args.storage, args.delete);
-
-          case 'proxmox_add_network_vm':
-            return await this.addNetworkVM(args.node, args.vmid, args.net, args.bridge, args.model, args.macaddr, args.vlan, args.firewall);
-
-          case 'proxmox_add_network_lxc':
-            return await this.addNetworkLXC(args.node, args.vmid, args.net, args.bridge, args.ip, args.gw, args.firewall);
-
-          case 'proxmox_update_network_vm':
-            return await this.updateNetworkVM(args.node, args.vmid, args.net, args.bridge, args.model, args.macaddr, args.vlan, args.firewall);
-
-          case 'proxmox_update_network_lxc':
-            return await this.updateNetworkLXC(args.node, args.vmid, args.net, args.bridge, args.ip, args.gw, args.firewall);
-
-          case 'proxmox_remove_network_vm':
-            return await this.removeNetworkVM(args.node, args.vmid, args.net);
-
-          case 'proxmox_remove_network_lxc':
-            return await this.removeNetworkLXC(args.node, args.vmid, args.net);
-
-          default:
-            throw new Error(`Unknown tool: ${name}`);
-        }
-      } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error.message}`
-            }
-          ]
-        };
-      }
+      return this.callTool(name, args || {});
     });
+  }
+
+  async callTool(name, args) {
+    const decision = authorize(name, args, this.gate);
+    if (!decision.allowed) {
+      return { content: [{ type: 'text', text: `⚠️ ${decision.reason}` }] };
+    }
+    try {
+      switch (name) {
+        case 'proxmox_get_nodes':
+          return await this.getNodes();
+
+        case 'proxmox_get_node_status':
+          return await this.getNodeStatus(args.node);
+
+        case 'proxmox_get_vms':
+          return await this.getVMs(args.node, args.type);
+
+        case 'proxmox_get_vm_status':
+          return await this.getVMStatus(args.node, args.vmid, args.type);
+
+        case 'proxmox_execute_vm_command':
+          return await this.executeVMCommand(args.node, args.vmid, args.command, args.type);
+
+        case 'proxmox_get_storage':
+          return await this.getStorage(args.node);
+
+        case 'proxmox_get_cluster_status':
+          return await this.getClusterStatus();
+
+        case 'proxmox_list_templates':
+          return await this.listTemplates(args.node, args.storage);
+
+        case 'proxmox_create_lxc':
+          return await this.createLXCContainer(args);
+
+        case 'proxmox_create_vm':
+          return await this.createVM(args);
+
+        case 'proxmox_get_next_vmid':
+          return await this.getNextVMID();
+
+        case 'proxmox_start_lxc':
+          return await this.startVM(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_start_vm':
+          return await this.startVM(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_stop_lxc':
+          return await this.stopVM(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_stop_vm':
+          return await this.stopVM(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_delete_lxc':
+          return await this.deleteVM(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_delete_vm':
+          return await this.deleteVM(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_reboot_lxc':
+          return await this.rebootVM(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_reboot_vm':
+          return await this.rebootVM(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_shutdown_lxc':
+          return await this.shutdownVM(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_shutdown_vm':
+          return await this.shutdownVM(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_pause_vm':
+          return await this.pauseVM(args.node, args.vmid);
+
+        case 'proxmox_resume_vm':
+          return await this.resumeVM(args.node, args.vmid);
+
+        case 'proxmox_clone_lxc':
+          return await this.cloneVM(args.node, args.vmid, args.newid, args.hostname, 'lxc');
+
+        case 'proxmox_clone_vm':
+          return await this.cloneVM(args.node, args.vmid, args.newid, args.name, 'qemu');
+
+        case 'proxmox_resize_lxc':
+          return await this.resizeVM(args.node, args.vmid, args.memory, args.cores, 'lxc');
+
+        case 'proxmox_resize_vm':
+          return await this.resizeVM(args.node, args.vmid, args.memory, args.cores, 'qemu');
+
+        case 'proxmox_create_snapshot_lxc':
+          return await this.createSnapshot(args.node, args.vmid, args.snapname, 'lxc');
+
+        case 'proxmox_create_snapshot_vm':
+          return await this.createSnapshot(args.node, args.vmid, args.snapname, 'qemu');
+
+        case 'proxmox_list_snapshots_lxc':
+          return await this.listSnapshots(args.node, args.vmid, 'lxc');
+
+        case 'proxmox_list_snapshots_vm':
+          return await this.listSnapshots(args.node, args.vmid, 'qemu');
+
+        case 'proxmox_rollback_snapshot_lxc':
+          return await this.rollbackSnapshot(args.node, args.vmid, args.snapname, 'lxc');
+
+        case 'proxmox_rollback_snapshot_vm':
+          return await this.rollbackSnapshot(args.node, args.vmid, args.snapname, 'qemu');
+
+        case 'proxmox_delete_snapshot_lxc':
+          return await this.deleteSnapshot(args.node, args.vmid, args.snapname, 'lxc');
+
+        case 'proxmox_delete_snapshot_vm':
+          return await this.deleteSnapshot(args.node, args.vmid, args.snapname, 'qemu');
+
+        case 'proxmox_create_backup_lxc':
+          return await this.createBackup(args.node, args.vmid, args.storage, args.mode, args.compress, 'lxc');
+
+        case 'proxmox_create_backup_vm':
+          return await this.createBackup(args.node, args.vmid, args.storage, args.mode, args.compress, 'qemu');
+
+        case 'proxmox_list_backups':
+          return await this.listBackups(args.node, args.storage);
+
+        case 'proxmox_restore_backup_lxc':
+          return await this.restoreBackup(args.node, args.vmid, args.archive, args.storage, 'lxc');
+
+        case 'proxmox_restore_backup_vm':
+          return await this.restoreBackup(args.node, args.vmid, args.archive, args.storage, 'qemu');
+
+        case 'proxmox_delete_backup':
+          return await this.deleteBackup(args.node, args.storage, args.volume);
+
+        case 'proxmox_add_disk_vm':
+          return await this.addDiskVM(args.node, args.vmid, args.disk, args.storage, args.size);
+
+        case 'proxmox_add_mountpoint_lxc':
+          return await this.addMountPointLXC(args.node, args.vmid, args.mp, args.storage, args.size);
+
+        case 'proxmox_resize_disk_vm':
+          return await this.resizeDiskVM(args.node, args.vmid, args.disk, args.size);
+
+        case 'proxmox_resize_disk_lxc':
+          return await this.resizeDiskLXC(args.node, args.vmid, args.disk, args.size);
+
+        case 'proxmox_remove_disk_vm':
+          return await this.removeDiskVM(args.node, args.vmid, args.disk);
+
+        case 'proxmox_remove_mountpoint_lxc':
+          return await this.removeMountPointLXC(args.node, args.vmid, args.mp);
+
+        case 'proxmox_move_disk_vm':
+          return await this.moveDiskVM(args.node, args.vmid, args.disk, args.storage, args.delete);
+
+        case 'proxmox_move_disk_lxc':
+          return await this.moveDiskLXC(args.node, args.vmid, args.disk, args.storage, args.delete);
+
+        case 'proxmox_add_network_vm':
+          return await this.addNetworkVM(args.node, args.vmid, args.net, args.bridge, args.model, args.macaddr, args.vlan, args.firewall);
+
+        case 'proxmox_add_network_lxc':
+          return await this.addNetworkLXC(args.node, args.vmid, args.net, args.bridge, args.ip, args.gw, args.firewall);
+
+        case 'proxmox_update_network_vm':
+          return await this.updateNetworkVM(args.node, args.vmid, args.net, args.bridge, args.model, args.macaddr, args.vlan, args.firewall);
+
+        case 'proxmox_update_network_lxc':
+          return await this.updateNetworkLXC(args.node, args.vmid, args.net, args.bridge, args.ip, args.gw, args.firewall);
+
+        case 'proxmox_remove_network_vm':
+          return await this.removeNetworkVM(args.node, args.vmid, args.net);
+
+        case 'proxmox_remove_network_lxc':
+          return await this.removeNetworkLXC(args.node, args.vmid, args.net);
+
+        default:
+          throw new Error(`Unknown tool: ${name}`);
+      }
+    } catch (error) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Error: ${error.message}`
+          }
+        ]
+      };
+    }
   }
 
   async getNodes() {
@@ -1291,15 +1315,6 @@ export class ProxmoxServer {
   }
 
   async getNodeStatus(node) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Node Status Requires Elevated Permissions**\n\nTo view detailed node status, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file and ensure your API token has Sys.Audit permissions.\n\n**Current permissions**: Basic (node listing only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1429,15 +1444,6 @@ export class ProxmoxServer {
   }
 
   async executeVMCommand(node, vmid, command, type = 'qemu') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Command Execution Requires Elevated Permissions**\n\nTo execute commands on VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file and ensure your API token has appropriate VM permissions.\n\n**Current permissions**: Basic (VM listing only)\n**Requested command**: \`${command}\``
-        }]
-      };
-    }
-
     try {
       // Validate inputs to prevent injection attacks
       const safeNode = this.validateNodeName(node);
@@ -1641,15 +1647,6 @@ export class ProxmoxServer {
   }
 
   async createLXCContainer(args) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Container Creation Requires Elevated Permissions**\n\nTo create containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file and ensure your API token has VM.Allocate permissions.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(args.node);
@@ -1706,15 +1703,6 @@ export class ProxmoxServer {
   }
 
   async createVM(args) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Creation Requires Elevated Permissions**\n\nTo create VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file and ensure your API token has VM.Allocate permissions.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(args.node);
@@ -1779,15 +1767,6 @@ export class ProxmoxServer {
   }
 
   async startVM(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Control Requires Elevated Permissions**\n\nTo start/stop VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1816,15 +1795,6 @@ export class ProxmoxServer {
   }
 
   async stopVM(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Control Requires Elevated Permissions**\n\nTo start/stop VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1866,15 +1836,6 @@ export class ProxmoxServer {
   }
 
   async deleteVM(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM/Container Deletion Requires Elevated Permissions**\n\nTo delete VMs/containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1903,15 +1864,6 @@ export class ProxmoxServer {
   }
 
   async rebootVM(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Reboot Requires Elevated Permissions**\n\nTo reboot VMs/containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1940,15 +1892,6 @@ export class ProxmoxServer {
   }
 
   async shutdownVM(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Shutdown Requires Elevated Permissions**\n\nTo shutdown VMs/containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -1977,15 +1920,6 @@ export class ProxmoxServer {
   }
 
   async pauseVM(node, vmid) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Pause Requires Elevated Permissions**\n\nTo pause VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2014,15 +1948,6 @@ export class ProxmoxServer {
   }
 
   async resumeVM(node, vmid) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Resume Requires Elevated Permissions**\n\nTo resume VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2051,15 +1976,6 @@ export class ProxmoxServer {
   }
 
   async cloneVM(node, vmid, newid, nameOrHostname, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Clone Requires Elevated Permissions**\n\nTo clone VMs/containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2102,15 +2018,6 @@ export class ProxmoxServer {
   }
 
   async resizeVM(node, vmid, memory, cores, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **VM Resize Requires Elevated Permissions**\n\nTo resize VMs/containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     // Build body with only provided parameters
     const body = {};
     if (memory !== undefined) {
@@ -2163,15 +2070,6 @@ export class ProxmoxServer {
   }
 
   async createSnapshot(node, vmid, snapname, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Snapshot Creation Requires Elevated Permissions**\n\nTo create snapshots, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2204,15 +2102,6 @@ export class ProxmoxServer {
   }
 
   async listSnapshots(node, vmid, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Snapshot Listing Requires Elevated Permissions**\n\nTo list snapshots, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2262,15 +2151,6 @@ export class ProxmoxServer {
   }
 
   async rollbackSnapshot(node, vmid, snapname, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Snapshot Rollback Requires Elevated Permissions**\n\nTo rollback snapshots, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2302,15 +2182,6 @@ export class ProxmoxServer {
   }
 
   async deleteSnapshot(node, vmid, snapname, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Snapshot Deletion Requires Elevated Permissions**\n\nTo delete snapshots, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2341,15 +2212,6 @@ export class ProxmoxServer {
   }
 
   async createBackup(node, vmid, storage = 'local', mode = 'snapshot', compress = 'zstd', type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Backup Creation Requires Elevated Permissions**\n\nTo create backups, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2391,15 +2253,6 @@ export class ProxmoxServer {
   }
 
   async listBackups(node, storage = 'local') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Backup Listing Requires Elevated Permissions**\n\nTo list backups, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2450,15 +2303,6 @@ export class ProxmoxServer {
   }
 
   async restoreBackup(node, vmid, archive, storage, type = 'lxc') {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Backup Restore Requires Elevated Permissions**\n\nTo restore backups, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2502,15 +2346,6 @@ export class ProxmoxServer {
   }
 
   async deleteBackup(node, storage, volume) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Backup Deletion Requires Elevated Permissions**\n\nTo delete backups, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2540,15 +2375,6 @@ export class ProxmoxServer {
   }
 
   async addDiskVM(node, vmid, disk, storage, size) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo add disks to VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2592,15 +2418,6 @@ export class ProxmoxServer {
   }
 
   async addMountPointLXC(node, vmid, mp, storage, size) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo add mount points to containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2638,15 +2455,6 @@ export class ProxmoxServer {
   }
 
   async resizeDiskVM(node, vmid, disk, size) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo resize VM disks, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2685,15 +2493,6 @@ export class ProxmoxServer {
   }
 
   async resizeDiskLXC(node, vmid, disk, size) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo resize LXC disks, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2733,15 +2532,6 @@ export class ProxmoxServer {
   }
 
   async removeDiskVM(node, vmid, disk) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo remove disks from VMs, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2776,15 +2566,6 @@ export class ProxmoxServer {
   }
 
   async removeMountPointLXC(node, vmid, mp) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo remove mount points from containers, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2819,15 +2600,6 @@ export class ProxmoxServer {
   }
 
   async moveDiskVM(node, vmid, disk, storage, deleteSource = true) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo move VM disks, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2867,15 +2639,6 @@ export class ProxmoxServer {
   }
 
   async moveDiskLXC(node, vmid, disk, storage, deleteSource = true) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Disk Management Requires Elevated Permissions**\n\nTo move LXC disks, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2916,15 +2679,6 @@ export class ProxmoxServer {
   }
 
   async addNetworkVM(node, vmid, net, bridge, model = 'virtio', macaddr, vlan, firewall) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo add VM network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -2981,15 +2735,6 @@ export class ProxmoxServer {
   }
 
   async addNetworkLXC(node, vmid, net, bridge, ip, gw, firewall) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo add LXC network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -3048,15 +2793,6 @@ export class ProxmoxServer {
   }
 
   async updateNetworkVM(node, vmid, net, bridge, model, macaddr, vlan, firewall) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo update VM network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -3154,15 +2890,6 @@ export class ProxmoxServer {
   }
 
   async updateNetworkLXC(node, vmid, net, bridge, ip, gw, firewall) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo update LXC network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -3247,15 +2974,6 @@ export class ProxmoxServer {
   }
 
   async removeNetworkVM(node, vmid, net) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo remove VM network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
@@ -3289,15 +3007,6 @@ export class ProxmoxServer {
   }
 
   async removeNetworkLXC(node, vmid, net) {
-    if (!this.allowElevated) {
-      return {
-        content: [{
-          type: 'text',
-          text: `⚠️  **Network Management Requires Elevated Permissions**\n\nTo remove LXC network interfaces, set \`PROXMOX_ALLOW_ELEVATED=true\` in your .env file.\n\n**Current permissions**: Basic (read-only)`
-        }]
-      };
-    }
-
     try {
       // Validate inputs
       const safeNode = this.validateNodeName(node);
