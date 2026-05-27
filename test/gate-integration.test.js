@@ -31,6 +31,17 @@ test('callTool refuses a stop on a protected id without hitting the API', async 
   const res = await s.callTool('proxmox_stop_lxc', { node: 'pve', vmid: '107' });
   assert.equal(called, false);
   assert.match(res.content[0].text, /protected/i);
+  assert.equal(res.isError, true);
+});
+
+test('callTool denies an unknown tool (fail-closed) without hitting the API', async () => {
+  const s = makeServer();
+  let called = false;
+  s.proxmoxRequest = async () => { called = true; return {}; };
+  const res = await s.callTool('proxmox_execute_vm_command', { node: 'pve', vmid: '450', command: 'id' });
+  assert.equal(called, false);
+  assert.match(res.content[0].text, /not permitted/i);
+  assert.equal(res.isError, true);
 });
 
 test('callTool allows a stop on a managed-range id (reaches the API stub)', async () => {

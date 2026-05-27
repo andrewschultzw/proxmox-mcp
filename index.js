@@ -408,20 +408,6 @@ export class ProxmoxServer {
           }
         },
         {
-          name: 'proxmox_execute_vm_command',
-          description: 'Execute a shell command on a virtual machine via Proxmox API',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              node: { type: 'string', description: 'Node name where VM is located' },
-              vmid: { type: 'string', description: 'VM ID number' },
-              command: { type: 'string', description: 'Shell command to execute' },
-              type: { type: 'string', enum: ['qemu', 'lxc'], description: 'VM type', default: 'qemu' }
-            },
-            required: ['node', 'vmid', 'command']
-          }
-        },
-        {
           name: 'proxmox_get_storage',
           description: 'List all storage pools and their usage across the cluster',
           inputSchema: {
@@ -1105,7 +1091,7 @@ export class ProxmoxServer {
   async callTool(name, args) {
     const decision = authorize(name, args, this.gate);
     if (!decision.allowed) {
-      return { content: [{ type: 'text', text: `⚠️ ${decision.reason}` }] };
+      return { content: [{ type: 'text', text: `⚠️ ${decision.reason}` }], isError: true };
     }
     try {
       switch (name) {
@@ -1120,9 +1106,6 @@ export class ProxmoxServer {
 
         case 'proxmox_get_vm_status':
           return await this.getVMStatus(args.node, args.vmid, args.type);
-
-        case 'proxmox_execute_vm_command':
-          return await this.executeVMCommand(args.node, args.vmid, args.command, args.type);
 
         case 'proxmox_get_storage':
           return await this.getStorage(args.node);
