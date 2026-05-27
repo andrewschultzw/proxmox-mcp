@@ -4,6 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { authorize } from './lib/gating.js';
+import { isAuthorized } from './lib/httpauth.js';
 import { parseIdSpec } from './lib/idspec.js';
 import { hasBindMounts } from './lib/guards.js';
 import { ramPreflight } from './lib/preflight.js';
@@ -349,8 +350,8 @@ export class ProxmoxServer {
     }
   }
 
-  setupToolHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  setupToolHandlers(server = this.server) {
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
           name: 'proxmox_get_nodes',
@@ -1116,7 +1117,7 @@ export class ProxmoxServer {
       ]
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
       return this.callTool(name, args || {});
     });
@@ -3112,10 +3113,66 @@ export class ProxmoxServer {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
 
+  makeServer() {
+    const server = new Server(
+      { name: 'proxmox-server', version: '1.0.0' },
+      { capabilities: { tools: {} } }
+    );
+    this.setupToolHandlers(server);
+    return server;
+  }
+
   async run() {
+    if ((process.env.MCP_TRANSPORT || 'stdio') === 'http') {
+      return this.runHttp();
+    }
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
     console.error('Proxmox MCP server running on stdio');
+  }
+
+  async runHttp() {
+    const { StreamableHTTPServerTransport } = await import('@modelcontextprotocol/sdk/server/streamableHttp.js');
+
+    const token = process.env.MCP_BEARER_TOKEN;
+    if (!token) throw new Error('MCP_BEARER_TOKEN is required for http transport');
+    const port = Number(process.env.MCP_HTTP_PORT || 3000);
+    const host = process.env.MCP_BIND_ADDR || '127.0.0.1';
+    const allowedHosts = (process.env.MCP_ALLOWED_HOSTS || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+
+    const handler = async (req, res) => {
+      if (!isAuthorized(req.headers['authorization'], token)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      if ((req.url || '').split('?')[0] !== '/mcp') {
+        res.writeHead(404).end();
+        return;
+      }
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+        enableDnsRebindingProtection: allowedHosts.length > 0,
+        allowedHosts,
+      });
+      const server = this.makeServer();
+      res.on('close', () => { transport.close(); server.close(); });
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    };
+
+    const { createServer } = await import('node:http');
+    const httpServer = createServer(handler);
+
+    await new Promise((resolve) => httpServer.listen(port, host, resolve));
+    const bound = httpServer.address();
+    console.error(`Proxmox MCP server running on http://${host}:${bound.port}/mcp`);
+    for (const sig of ['SIGINT', 'SIGTERM']) {
+      process.on(sig, () => { httpServer.close(); process.exit(0); });
+    }
+    return httpServer;
   }
 }
 
