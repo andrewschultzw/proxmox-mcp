@@ -8,6 +8,7 @@ import { parseIdSpec } from './lib/idspec.js';
 import { hasBindMounts } from './lib/guards.js';
 import { ramPreflight } from './lib/preflight.js';
 import { nextFreeId } from './lib/nextid.js';
+import { ipFromNetConfig, nextFreeIp } from './lib/ip.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -497,6 +498,19 @@ export class ProxmoxServer {
               hi: { type: 'number', description: 'Range end (inclusive)' },
             },
             required: ['lo', 'hi'],
+          },
+        },
+        {
+          name: 'proxmox_suggest_ip',
+          description: 'Suggest the next free static IP host-octet on 192.168.1.0/24 by reading existing CT/VM net configs. Reminder: reservations live in UniFi, so add a matching DHCP reservation.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              node: { type: 'string', description: 'Node name' },
+              start: { type: 'number', description: 'First host octet to consider', default: 50 },
+              end: { type: 'number', description: 'Last host octet to consider', default: 254 },
+            },
+            required: ['node'],
           },
         },
         {
@@ -1274,6 +1288,9 @@ export class ProxmoxServer {
 
         case 'proxmox_remove_network_lxc':
           return await this.removeNetworkLXC(args.node, args.vmid, args.net);
+
+        case 'proxmox_suggest_ip':
+          return await this.suggestIp(args.node, Number(args.start ?? 50), Number(args.end ?? 254));
 
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -3071,6 +3088,24 @@ export class ProxmoxServer {
         }]
       };
     }
+  }
+
+  async suggestIp(node, start, end) {
+    const safeNode = this.validateNodeName(node);
+    const used = new Set();
+    for (const kind of ['lxc', 'qemu']) {
+      const list = await this.proxmoxRequest(`/nodes/${safeNode}/${kind}`);
+      for (const item of list || []) {
+        const conf = await this.proxmoxRequest(`/nodes/${safeNode}/${kind}/${item.vmid}/config`);
+        const octet = ipFromNetConfig(conf?.net0);
+        if (octet != null) used.add(octet);
+      }
+    }
+    const octet = nextFreeIp(used, start, end);
+    const text = octet == null
+      ? `⚠️ No free IP in 192.168.1.${start}-${end}.`
+      : `Suggested static IP: **192.168.1.${octet}**\n\n⚠️ Add a matching DHCP reservation in the UniFi UDM Pro SE (reservations are NOT managed by Proxmox).`;
+    return { content: [{ type: 'text', text }] };
   }
 
   formatUptime(seconds) {
