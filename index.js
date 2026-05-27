@@ -90,8 +90,9 @@ export class ProxmoxServer {
     });
 
     this.fetch = fetch;
-    
+
     this.setupToolHandlers();
+    console.error(`[proxmox-mcp] gate: categories=${JSON.stringify(this.gate.categories)} protectedIds=${[...this.gate.protectedIds].sort((a,b)=>a-b).join(',')} managedRange=${this.gate.managedRange.lo}-${this.gate.managedRange.hi}`);
   }
 
   // Input validation methods for security
@@ -230,25 +231,6 @@ export class ProxmoxServer {
       throw new Error('Mount point number out of range (max: mp255)');
     }
     return `mp${num}`;
-  }
-
-  validateCommand(command) {
-    if (!command || typeof command !== 'string') {
-      throw new Error('Command is required and must be a string');
-    }
-
-    // Check for dangerous characters that could be used for command injection
-    const dangerousChars = /[;&|`$(){}[\]<>\\]/g;
-    if (dangerousChars.test(command)) {
-      throw new Error('Command contains potentially dangerous characters: ; & | ` $ ( ) { } [ ] < > \\');
-    }
-
-    // Limit command length
-    if (command.length > 1000) {
-      throw new Error('Command exceeds maximum allowed length (1000 characters)');
-    }
-
-    return command;
   }
 
   generateSecurePassword() {
@@ -578,7 +560,8 @@ export class ProxmoxServer {
             type: 'object',
             properties: {
               node: { type: 'string', description: 'Node name where container is located' },
-              vmid: { type: 'string', description: 'Container ID number to delete' }
+              vmid: { type: 'string', description: 'Container ID number to delete' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid']
           }
@@ -590,7 +573,8 @@ export class ProxmoxServer {
             type: 'object',
             properties: {
               node: { type: 'string', description: 'Node name where VM is located' },
-              vmid: { type: 'string', description: 'VM ID number to delete' }
+              vmid: { type: 'string', description: 'VM ID number to delete' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid']
           }
@@ -781,7 +765,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where container is located' },
               vmid: { type: 'string', description: 'Container ID number' },
-              snapname: { type: 'string', description: 'Snapshot name to rollback to' }
+              snapname: { type: 'string', description: 'Snapshot name to rollback to' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'snapname']
           }
@@ -794,7 +779,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where VM is located' },
               vmid: { type: 'string', description: 'VM ID number' },
-              snapname: { type: 'string', description: 'Snapshot name to rollback to' }
+              snapname: { type: 'string', description: 'Snapshot name to rollback to' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'snapname']
           }
@@ -807,7 +793,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where container is located' },
               vmid: { type: 'string', description: 'Container ID number' },
-              snapname: { type: 'string', description: 'Snapshot name to delete' }
+              snapname: { type: 'string', description: 'Snapshot name to delete' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'snapname']
           }
@@ -820,7 +807,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where VM is located' },
               vmid: { type: 'string', description: 'VM ID number' },
-              snapname: { type: 'string', description: 'Snapshot name to delete' }
+              snapname: { type: 'string', description: 'Snapshot name to delete' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'snapname']
           }
@@ -876,7 +864,8 @@ export class ProxmoxServer {
               node: { type: 'string', description: 'Node name where container will be restored' },
               vmid: { type: 'string', description: 'New container ID for restored container' },
               archive: { type: 'string', description: 'Backup archive path (e.g., local:backup/vzdump-lxc-100-2025_11_06-09_00_00.tar.zst)' },
-              storage: { type: 'string', description: 'Storage location for restored container (optional)' }
+              storage: { type: 'string', description: 'Storage location for restored container (optional)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'archive']
           }
@@ -890,7 +879,8 @@ export class ProxmoxServer {
               node: { type: 'string', description: 'Node name where VM will be restored' },
               vmid: { type: 'string', description: 'New VM ID for restored VM' },
               archive: { type: 'string', description: 'Backup archive path (e.g., local:backup/vzdump-qemu-100-2025_11_06-09_00_00.vma.zst)' },
-              storage: { type: 'string', description: 'Storage location for restored VM (optional)' }
+              storage: { type: 'string', description: 'Storage location for restored VM (optional)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'archive']
           }
@@ -903,7 +893,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name' },
               storage: { type: 'string', description: 'Storage name (e.g., local)' },
-              volume: { type: 'string', description: 'Backup volume ID (e.g., local:backup/vzdump-lxc-100-2025_11_06-09_00_00.tar.zst)' }
+              volume: { type: 'string', description: 'Backup volume ID (e.g., local:backup/vzdump-lxc-100-2025_11_06-09_00_00.tar.zst)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'storage', 'volume']
           }
@@ -974,7 +965,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where VM is located' },
               vmid: { type: 'string', description: 'VM ID number' },
-              disk: { type: 'string', description: 'Disk name to remove (e.g., scsi1, virtio1, sata1, ide1)' }
+              disk: { type: 'string', description: 'Disk name to remove (e.g., scsi1, virtio1, sata1, ide1)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'disk']
           }
@@ -987,7 +979,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where container is located' },
               vmid: { type: 'string', description: 'Container ID number' },
-              mp: { type: 'string', description: 'Mount point name to remove (e.g., mp0, mp1, mp2)' }
+              mp: { type: 'string', description: 'Mount point name to remove (e.g., mp0, mp1, mp2)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'mp']
           }
@@ -1100,7 +1093,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where VM is located' },
               vmid: { type: 'string', description: 'VM ID number' },
-              net: { type: 'string', description: 'Network interface name to remove (net0, net1, net2, etc.)' }
+              net: { type: 'string', description: 'Network interface name to remove (net0, net1, net2, etc.)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'net']
           }
@@ -1113,7 +1107,8 @@ export class ProxmoxServer {
             properties: {
               node: { type: 'string', description: 'Node name where container is located' },
               vmid: { type: 'string', description: 'Container ID number' },
-              net: { type: 'string', description: 'Network interface name to remove (net0, net1, net2, etc.)' }
+              net: { type: 'string', description: 'Network interface name to remove (net0, net1, net2, etc.)' },
+              confirm: { type: 'boolean', description: 'Must be true to perform this irreversible operation.' }
             },
             required: ['node', 'vmid', 'net']
           }
@@ -1470,52 +1465,6 @@ export class ProxmoxServer {
       return {
         content: [{ type: 'text', text: `❌ Failed to get VM status: ${error.message}` }],
         isError: true
-      };
-    }
-  }
-
-  async executeVMCommand(node, vmid, command, type = 'qemu') {
-    try {
-      // Validate inputs to prevent injection attacks
-      const safeNode = this.validateNodeName(node);
-      const safeVMID = this.validateVMID(vmid);
-      const safeCommand = this.validateCommand(command);
-
-      // For QEMU VMs, we need to use the guest agent
-      if (type === 'qemu') {
-        const result = await this.proxmoxRequest(`/nodes/${safeNode}/qemu/${safeVMID}/agent/exec`, 'POST', {
-          command: safeCommand
-        });
-
-        let output = `💻 **Command executed on VM ${safeVMID}**\n\n`;
-        output += `**Command**: \`${safeCommand}\`\n`;
-        output += `**Result**: Command submitted to guest agent\n`;
-        output += `**PID**: ${result.pid || 'N/A'}\n\n`;
-        output += `*Note: Use guest agent status to check command completion*`;
-
-        return {
-          content: [{ type: 'text', text: output }]
-        };
-      } else {
-        // For LXC containers, we can execute directly
-        const result = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/exec`, 'POST', {
-          command: safeCommand
-        });
-
-        let output = `📦 **Command executed on LXC ${safeVMID}**\n\n`;
-        output += `**Command**: \`${safeCommand}\`\n`;
-        output += `**Output**:\n\`\`\`\n${result || 'Command executed successfully'}\n\`\`\``;
-
-        return {
-          content: [{ type: 'text', text: output }]
-        };
-      }
-    } catch (error) {
-      return {
-        content: [{
-          type: 'text',
-          text: `❌ **Failed to execute command on VM ${vmid}**\n\nError: ${error.message}\n\n*Note: Make sure the VM has guest agent installed and running*`
-        }]
       };
     }
   }
