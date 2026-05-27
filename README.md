@@ -14,5 +14,8 @@ Fork of [gilby125/mcp-proxmox](https://github.com/gilby125/mcp-proxmox) (MIT, ©
 
 Hosting on CT 300 over HTTP (transport, bearer auth, systemd, Proxmox role) is Plan B.
 
+## HTTP transport (Plan B)
+Set `MCP_TRANSPORT=http` plus `MCP_BEARER_TOKEN`, `MCP_BIND_ADDR`, `MCP_HTTP_PORT`, and (recommended) `MCP_ALLOWED_HOSTS`. Optional TLS: set `MCP_TLS_CERT`/`MCP_TLS_KEY`. Run as a service with `deploy/proxmox-mcp.service`. Register a client with `claude mcp add --transport http proxmox <url> --header "Authorization: Bearer <token>"` (add `CF-Access-Client-Id`/`CF-Access-Client-Secret` headers when behind Cloudflare Access). See the hosting runbook in docs for CF Access, NPM, and the mcp@pve role.
+
 ## Safety model
 All mutating tools pass through `authorize()` (`lib/gating.js`) once at dispatch; the gate is fail-closed (any tool not explicitly classified is denied). Read tools are always allowed. With every `ALLOW_*` flag false, the server is read-only. `PROTECTED_IDS` can be snapshotted/backed up but never stopped, resized, rolled back, restored, or destroyed.

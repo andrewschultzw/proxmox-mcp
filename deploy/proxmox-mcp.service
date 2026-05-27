@@ -1,0 +1,20 @@
+[Unit]
+Description=Proxmox MCP server (HTTP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mcp
+WorkingDirectory=/opt/proxmox-mcp
+EnvironmentFile=/opt/.env
+ExecStart=/usr/bin/node /opt/proxmox-mcp/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/proxmox-mcp
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
