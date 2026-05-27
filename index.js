@@ -9,6 +9,7 @@ import { hasBindMounts } from './lib/guards.js';
 import { ramPreflight } from './lib/preflight.js';
 import { nextFreeId } from './lib/nextid.js';
 import { ipFromNetConfig, nextFreeIp } from './lib/ip.js';
+import { buildInventoryRows, formatInventoryMarkdown } from './lib/inventory.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -512,6 +513,14 @@ export class ProxmoxServer {
               end: { type: 'number', description: 'Last host octet to consider', default: 254 },
             },
             required: ['node'],
+          },
+        },
+        {
+          name: 'proxmox_export_inventory',
+          description: 'Export the live CT/VM inventory (id, name, type, status, IP, memory, disk) as markdown or JSON, suitable for dropping into homelabmisc.',
+          inputSchema: {
+            type: 'object',
+            properties: { format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown' } },
           },
         },
         {
@@ -1292,6 +1301,9 @@ export class ProxmoxServer {
 
         case 'proxmox_suggest_ip':
           return await this.suggestIp(args.node, Number(args.start ?? 50), Number(args.end ?? 254));
+
+        case 'proxmox_export_inventory':
+          return await this.exportInventory(args.format || 'markdown');
 
         default:
           throw new Error(`Unknown tool: ${name}`);
@@ -3111,6 +3123,21 @@ export class ProxmoxServer {
     const text = octet == null
       ? `⚠️ No free IP in 192.168.1.${start}-${end}.`
       : `Suggested static IP: **192.168.1.${octet}**\n\n⚠️ Add a matching DHCP reservation in the UniFi UDM Pro SE (reservations are NOT managed by Proxmox).`;
+    return { content: [{ type: 'text', text }] };
+  }
+
+  async exportInventory(format) {
+    const resources = await this.proxmoxRequest('/cluster/resources?type=vm');
+    const configs = {};
+    for (const r of resources || []) {
+      if (r.type !== 'lxc' && r.type !== 'qemu') continue;
+      const kind = r.type === 'lxc' ? 'lxc' : 'qemu';
+      try {
+        configs[r.vmid] = await this.proxmoxRequest(`/nodes/${r.node}/${kind}/${r.vmid}/config`);
+      } catch { /* skip configs we can't read; row still rendered without IP */ }
+    }
+    const rows = buildInventoryRows(resources, configs);
+    const text = format === 'json' ? JSON.stringify(rows, null, 2) : formatInventoryMarkdown(rows);
     return { content: [{ type: 'text', text }] };
   }
 
