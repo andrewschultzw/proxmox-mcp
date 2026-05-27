@@ -7,6 +7,7 @@ import { authorize } from './lib/gating.js';
 import { parseIdSpec } from './lib/idspec.js';
 import { hasBindMounts } from './lib/guards.js';
 import { ramPreflight } from './lib/preflight.js';
+import { nextFreeId } from './lib/nextid.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -485,6 +486,18 @@ export class ProxmoxServer {
             type: 'object',
             properties: {}
           }
+        },
+        {
+          name: 'proxmox_get_next_id_in_range',
+          description: 'Suggest the next free VMID within a convention range (e.g. 100-199 infra, 400-499 lab)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              lo: { type: 'number', description: 'Range start (inclusive)' },
+              hi: { type: 'number', description: 'Range end (inclusive)' },
+            },
+            required: ['lo', 'hi'],
+          },
         },
         {
           name: 'proxmox_start_lxc',
@@ -1126,6 +1139,9 @@ export class ProxmoxServer {
 
         case 'proxmox_get_next_vmid':
           return await this.getNextVMID();
+
+        case 'proxmox_get_next_id_in_range':
+          return await this.getNextIdInRange(Number(args.lo), Number(args.hi));
 
         case 'proxmox_start_lxc':
           return await this.startVM(args.node, args.vmid, 'lxc');
@@ -1834,6 +1850,16 @@ export class ProxmoxServer {
         content: [{ type: 'text', text: `❌ **Failed to get next VMID**\n\nError: ${error.message}` }]
       };
     }
+  }
+
+  async getNextIdInRange(lo, hi) {
+    const resources = await this.proxmoxRequest('/cluster/resources?type=vm');
+    const used = new Set((resources || []).map((r) => Number(r.vmid)).filter((n) => !Number.isNaN(n)));
+    const id = nextFreeId(used, lo, hi);
+    const text = id == null
+      ? `⚠️ No free VMID in range ${lo}-${hi}.`
+      : `Next free VMID in ${lo}-${hi}: **${id}**`;
+    return { content: [{ type: 'text', text }] };
   }
 
   async deleteVM(node, vmid, type = 'lxc') {
