@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isAuthorized } from '../lib/httpauth.js';
+import { isAuthorized, tlsConfigured } from '../lib/httpauth.js';
 
 const TOKEN = 'super-secret-token-value';
 
@@ -26,4 +26,11 @@ test('rejects when no expected token configured', () => {
 
 test('rejects a token that is a prefix of the expected (length mismatch)', () => {
   assert.equal(isAuthorized(`Bearer ${TOKEN.slice(0, -1)}`, TOKEN), false);
+});
+
+test('tlsConfigured is true only when BOTH cert and key are set', () => {
+  assert.equal(tlsConfigured({ MCP_TLS_CERT: '/c.pem', MCP_TLS_KEY: '/k.pem' }), true);
+  assert.equal(tlsConfigured({ MCP_TLS_CERT: '/c.pem' }), false);
+  assert.equal(tlsConfigured({ MCP_TLS_KEY: '/k.pem' }), false);
+  assert.equal(tlsConfigured({}), false);
 });

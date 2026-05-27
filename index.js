@@ -4,7 +4,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { authorize } from './lib/gating.js';
-import { isAuthorized } from './lib/httpauth.js';
+import { isAuthorized, tlsConfigured } from './lib/httpauth.js';
 import { parseIdSpec } from './lib/idspec.js';
 import { hasBindMounts } from './lib/guards.js';
 import { ramPreflight } from './lib/preflight.js';
@@ -3171,8 +3171,19 @@ export class ProxmoxServer {
       }
     };
 
-    const { createServer } = await import('node:http');
-    const httpServer = createServer(handler);
+    let httpServer;
+    if (tlsConfigured(process.env)) {
+      const { createServer } = await import('node:https');
+      const { readFileSync } = await import('node:fs');
+      httpServer = createServer(
+        { cert: readFileSync(process.env.MCP_TLS_CERT), key: readFileSync(process.env.MCP_TLS_KEY) },
+        handler,
+      );
+      console.error('[proxmox-mcp] http transport: TLS enabled');
+    } else {
+      const { createServer } = await import('node:http');
+      httpServer = createServer(handler);
+    }
 
     await new Promise((resolve) => httpServer.listen(port, host, resolve));
     const bound = httpServer.address();
