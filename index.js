@@ -3142,25 +3142,33 @@ export class ProxmoxServer {
       .split(',').map((s) => s.trim()).filter(Boolean);
 
     const handler = async (req, res) => {
-      if (!isAuthorized(req.headers['authorization'], token)) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Unauthorized' }));
-        return;
+      try {
+        if (!isAuthorized(req.headers['authorization'], token)) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+        if ((req.url || '').split('?')[0] !== '/mcp') {
+          res.writeHead(404).end();
+          return;
+        }
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: undefined,
+          enableJsonResponse: true,
+          enableDnsRebindingProtection: allowedHosts.length > 0,
+          allowedHosts,
+        });
+        const server = this.makeServer();
+        res.on('close', () => { transport.close(); server.close(); });
+        await server.connect(transport);
+        await transport.handleRequest(req, res);
+      } catch (err) {
+        console.error('[proxmox-mcp] request handler error:', err);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal Server Error' }));
+        }
       }
-      if ((req.url || '').split('?')[0] !== '/mcp') {
-        res.writeHead(404).end();
-        return;
-      }
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-        enableDnsRebindingProtection: allowedHosts.length > 0,
-        allowedHosts,
-      });
-      const server = this.makeServer();
-      res.on('close', () => { transport.close(); server.close(); });
-      await server.connect(transport);
-      await transport.handleRequest(req, res);
     };
 
     const { createServer } = await import('node:http');
