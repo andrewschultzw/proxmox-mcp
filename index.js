@@ -6,6 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { authorize } from './lib/gating.js';
 import { parseIdSpec } from './lib/idspec.js';
 import { hasBindMounts } from './lib/guards.js';
+import { ramPreflight } from './lib/preflight.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -1640,6 +1641,14 @@ export class ProxmoxServer {
       const generatedPassword = args.password || this.generateSecurePassword();
       const isPasswordGenerated = !args.password;
 
+      // RAM preflight — refuse before creating if host memory is insufficient
+      const nodeStatus = await this.proxmoxRequest(`/nodes/${safeNode}/status`);
+      const freeBytes = nodeStatus?.memory?.free ?? 0;
+      const pre = ramPreflight({ requestMB: Number(args.memory ?? 512), freeBytes });
+      if (!pre.ok) {
+        return { content: [{ type: 'text', text: `⚠️ ${pre.message}` }] };
+      }
+
       // Build the request body
       const body = {
         vmid: safeVMID,
@@ -1691,6 +1700,14 @@ export class ProxmoxServer {
       // Validate inputs
       const safeNode = this.validateNodeName(args.node);
       const safeVMID = this.validateVMID(args.vmid);
+
+      // RAM preflight — refuse before creating if host memory is insufficient
+      const nodeStatus = await this.proxmoxRequest(`/nodes/${safeNode}/status`);
+      const freeBytes = nodeStatus?.memory?.free ?? 0;
+      const pre = ramPreflight({ requestMB: Number(args.memory ?? 512), freeBytes });
+      if (!pre.ok) {
+        return { content: [{ type: 'text', text: `⚠️ ${pre.message}` }] };
+      }
 
       // Build the request body for QEMU VM creation
       const body = {
