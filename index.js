@@ -81,6 +81,7 @@ export class ProxmoxServer {
     };
     // Back-compat: legacy methods read this for "show extra detail" behavior.
     this.allowElevated = Object.values(this.gate.categories).some(Boolean);
+    this.ct300Pubkey = process.env.CT300_SSH_PUBKEY || '';
     
     // Create agent that accepts self-signed certificates
     this.httpsAgent = new https.Agent({
@@ -1692,6 +1693,11 @@ export class ProxmoxServer {
         storage: args.storage || 'local-lvm',
         rootfs: `${args.storage || 'local-lvm'}:${args.rootfs || 8}`
       };
+
+      // Inject CT-300 SSH public key if configured so the automation node can reach new LXCs
+      if (this.ct300Pubkey) {
+        body['ssh-public-keys'] = this.ct300Pubkey;
+      }
 
       // Make the API request
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/lxc`, 'POST', body);
