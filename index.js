@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { authorize } from './lib/gating.js';
 import { parseIdSpec } from './lib/idspec.js';
+import { hasBindMounts } from './lib/guards.js';
 import fetch from 'node-fetch';
 import https from 'https';
 import crypto from 'crypto';
@@ -2058,6 +2059,13 @@ export class ProxmoxServer {
       const safeNode = this.validateNodeName(node);
       const safeVMID = this.validateVMID(vmid);
       const safeSnapname = this.validateSnapshotName(snapname);
+
+      if (type === 'lxc') {
+        const conf = await this.proxmoxRequest(`/nodes/${safeNode}/lxc/${safeVMID}/config`);
+        if (hasBindMounts(conf)) {
+          return { content: [{ type: 'text', text: `⚠️ LXC ${safeVMID} has bind mounts (mp*). Proxmox cannot snapshot it — use the service's own dump instead (e.g. pg_dump for Immich).` }] };
+        }
+      }
 
       const result = await this.proxmoxRequest(`/nodes/${safeNode}/${type}/${safeVMID}/snapshot`, 'POST', {
         snapname: safeSnapname
