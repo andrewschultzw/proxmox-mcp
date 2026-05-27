@@ -43,6 +43,15 @@ test('irreversible op requires confirm=true', () => {
   assert.equal(confirmed.allowed, true);
 });
 
+test('harmful op with missing/invalid vmid is refused', () => {
+  assert.equal(authorize('proxmox_stop_lxc', {}, cfg).allowed, false);
+  assert.equal(authorize('proxmox_delete_lxc', { confirm: true }, { ...cfg, categories: { ...cfg.categories, destroy: true } }).allowed, false);
+  // empty-string vmid must not resolve to 0 and slip through
+  assert.equal(authorize('proxmox_stop_lxc', { vmid: '' }, cfg).allowed, false);
+  // non-numeric vmid
+  assert.equal(authorize('proxmox_stop_lxc', { vmid: 'bad' }, cfg).allowed, false);
+});
+
 test('every mutating tool name in TOOLS has a known category', () => {
   const valid = new Set(['read', 'provision', 'power', 'snapshot', 'backup', 'destroy']);
   for (const [name, meta] of Object.entries(TOOLS)) {
