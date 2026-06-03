@@ -3187,7 +3187,8 @@ export class ProxmoxServer {
 
     await new Promise((resolve) => httpServer.listen(port, host, resolve));
     const bound = httpServer.address();
-    console.error(`Proxmox MCP server running on http://${host}:${bound.port}/mcp`);
+    const scheme = tlsConfigured(process.env) ? 'https' : 'http';
+    console.error(`Proxmox MCP server running on ${scheme}://${host}:${bound.port}/mcp`);
     for (const sig of ['SIGINT', 'SIGTERM']) {
       process.on(sig, () => { httpServer.close(); process.exit(0); });
     }
